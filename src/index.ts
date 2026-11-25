@@ -904,6 +904,65 @@ server.registerTool(
   }
 );
 
+// ─── get_mod_file_tree / get_addon_file_tree ────────────────
+
+const MAX_FILE_TREE_LINES = 500;
+
+function formatFileTree(tree: any): string {
+  const files: string[] = tree.files ?? [];
+  const lines = [
+    `${tree.file_count ?? files.length} files${tree.verified_at ? ` (verified ${tree.verified_at})` : ""}`,
+    tree.truncated ? "⚠ The archive has more files than the Forge records; this listing is incomplete." : null,
+    "",
+    ...files.slice(0, MAX_FILE_TREE_LINES),
+    files.length > MAX_FILE_TREE_LINES ? `… ${files.length - MAX_FILE_TREE_LINES} more` : null,
+  ];
+  return lines.filter((l) => l !== null).join("\n");
+}
+
+async function fileTreeResult(path: string) {
+  try {
+    const data = (await forgeGet(path)) as any;
+    return textResult(formatFileTree(data.data));
+  } catch (err) {
+    if (err instanceof ForgeApiError && err.status === 404) {
+      return textResult(
+        "No verified file tree for this version yet: it hasn't passed the Forge's automated file verification, or the version doesn't exist or isn't public."
+      );
+    }
+    throw err;
+  }
+}
+
+const FILE_TREE_HINT =
+  "Paths show where files install: client plugins under BepInEx/plugins, server mods under SPT_Runtime/user/mods (SPT 4.x) or user/mods (older SPT). Only available once the version has passed automated verification.";
+
+server.registerTool(
+  "get_mod_file_tree",
+  {
+    title: "Get Mod Version File Tree",
+    description: `List the files inside a mod version's download archive, as recorded by the Forge's automated verification. ${FILE_TREE_HINT} Get version IDs from get_mod_versions.`,
+    inputSchema: z.object({
+      mod_id: z.number().int().describe("The mod's numeric ID"),
+      version_id: z.number().int().describe("The mod version's numeric ID (not the version string)"),
+    }),
+  },
+  async (input) => fileTreeResult(`/mod/${input.mod_id}/versions/${input.version_id}/file-tree`)
+);
+
+server.registerTool(
+  "get_addon_file_tree",
+  {
+    title: "Get Addon Version File Tree",
+    description: `List the files inside an addon version's download archive, as recorded by the Forge's automated verification. ${FILE_TREE_HINT} Get version IDs from get_addon_versions.`,
+    inputSchema: z.object({
+      addon_id: z.number().int().describe("The addon's numeric ID"),
+      version_id: z.number().int().describe("The addon version's numeric ID (not the version string)"),
+    }),
+  },
+  async (input) => fileTreeResult(`/addon/${input.addon_id}/versions/${input.version_id}/file-tree`)
+);
+
 // ─── Start ───────────────────────────────────────────────────
 
 async function main() {
