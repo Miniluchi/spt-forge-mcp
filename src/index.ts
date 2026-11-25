@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod/v4";
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 const DEFAULT_BASE_URL = "https://sp-mod.com/api/v0";
 const BASE_URL = (process.env.FORGE_API_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, "");
 const USER_AGENT = `spt-forge-mcp/${VERSION}`;
@@ -400,7 +400,7 @@ server.registerTool(
   {
     title: "Search Mods",
     description:
-      "Search and filter SP-Tarkov mods on the Forge. Supports full-text search via `query`, filtering by name, category, SPT version, Fika compatibility, and more. Returns paginated results.",
+      "Search and filter SPT mods on the Forge. Supports full-text search via `query`, filtering by name, category, SPT version, Fika compatibility, and more. Returns paginated results.",
     inputSchema: z.object({
       query: z
         .optional(z.string())
@@ -421,7 +421,7 @@ server.registerTool(
       filter_spt_version: z
         .optional(z.string())
         .describe(
-          "Filter mods compatible with an SPT version constraint (e.g. '^3.11.0')"
+          "Filter mods compatible with an SPT version constraint (e.g. '^4.1.0')"
         ),
       filter_fika_compatible: z
         .optional(z.boolean())
@@ -478,7 +478,7 @@ server.registerTool(
   {
     title: "Get Mod Details",
     description:
-      "Get full details for a specific SP-Tarkov mod by its numeric ID. Includes description, versions, license, and category by default.",
+      "Get full details for a specific SPT mod by its numeric ID. Includes description, versions, license, and category by default.",
     inputSchema: z.object({
       mod_id: z.number().int().describe("The mod's numeric ID"),
       include: z
@@ -636,7 +636,7 @@ server.registerTool(
   {
     title: "Search Addons",
     description:
-      "Search SP-Tarkov addons (supplemental content for mods, like music packs or texture overrides).",
+      "Search SPT addons (supplemental content for mods, like music packs or texture overrides).",
     inputSchema: z.object({
       query: z.optional(z.string()).describe("Full-text search query"),
       filter_name: z.optional(z.string()).describe("Fuzzy filter by name"),
