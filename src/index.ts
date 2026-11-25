@@ -16,6 +16,16 @@ const HEADERS = {
 
 const MAX_RETRIES = 3;
 
+class ForgeApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string | undefined,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
 async function forgeGet(
   path: string,
   params?: Record<string, string | undefined>
@@ -53,7 +63,20 @@ async function forgeGet(
 
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(`Forge API error ${response.status}: ${body}`);
+      let code: string | undefined;
+      let message = body;
+      try {
+        const json = JSON.parse(body);
+        code = json.code;
+        message = json.message ?? body;
+      } catch {
+        // Not JSON (e.g. a CDN error page); keep the raw body.
+      }
+      throw new ForgeApiError(
+        response.status,
+        code,
+        `Forge API error ${response.status}${code ? ` (${code})` : ""}: ${message}`
+      );
     }
 
     return response.json();
@@ -149,49 +172,106 @@ function formatAddonDetail(addon: any): string {
   return lines.filter(Boolean).join("\n");
 }
 
-function formatUpdates(data: any): string {
-  const sections: string[] = [];
+// Split an "identifier:version,identifier:version" list the way the Forge does.
+function parsePairs(list: string): string[] {
+  return [...new Set(list.split(",").map((p) => p.trim()).filter(Boolean))];
+}
+
+const BLOCK_REASONS: Record<string, string> = {
+  dependency_constraint_violation: "another installed mod requires a different version",
+  missing_dependency: "a dependency of the new version has no version for this SPT version",
+  chain_dependency_conflict: "the new version's dependencies conflict with another installed mod",
+};
+
+function formatUpdates(data: any, requested: string): string {
+  const sections: string[] = [`Target SPT version: ${data.spt_version}`];
+  const matched: any[] = [];
+  const label = (v: any) => `**${v.name ?? v.guid}** (ID: ${v.mod_id})`;
 
   if (data.updates?.length) {
-    sections.push("## Updates Available\n" + data.updates.map((u: any) =>
-      `- **${u.name ?? u.identifier}**: ${u.current_version} → ${u.latest_version}${u.link ? ` — [Download](${u.link})` : ""}`
-    ).join("\n"));
+    sections.push("## Updates Available\n" + data.updates.map((u: any) => {
+      const cur = u.current_version;
+      const rec = u.recommended_version;
+      matched.push(cur);
+      return [
+        `- ${label(cur)}: ${cur.version} → ${rec.version}${u.update_reason === "newer_prerelease_available" ? " (prerelease)" : ""}`,
+        rec.spt_versions?.length ? `  SPT: ${rec.spt_versions.join(", ")}` : null,
+        rec.fika_compatibility ? `  Fika: ${rec.fika_compatibility}` : null,
+        rec.link ? `  Download: ${rec.link}` : null,
+      ].filter(Boolean).join("\n");
+    }).join("\n"));
   }
 
   if (data.blocked_updates?.length) {
-    sections.push("## Blocked Updates\n" + data.blocked_updates.map((u: any) =>
-      `- **${u.name ?? u.identifier}**: ${u.current_version} → ${u.latest_version} (blocked: ${u.reason ?? "dependency conflict"})`
-    ).join("\n"));
+    sections.push("## Blocked Updates\n" + data.blocked_updates.map((u: any) => {
+      const cur = u.current_version;
+      matched.push(cur);
+      const lines = [
+        `- ${label(cur)}: ${cur.version} → ${u.latest_version.version} blocked: ${BLOCK_REASONS[u.block_reason] ?? u.block_reason}`,
+      ];
+      for (const b of u.blocking_mods ?? []) {
+        lines.push(`  ${b.mod_name} ${b.current_version} (ID: ${b.mod_id}) requires ${b.constraint}`);
+      }
+      return lines.join("\n");
+    }).join("\n"));
   }
 
   if (data.up_to_date?.length) {
-    sections.push("## Up to Date\n" + data.up_to_date.map((u: any) =>
-      `- **${u.name ?? u.identifier}**: ${u.current_version}`
-    ).join("\n"));
+    sections.push("## Up to Date\n" + data.up_to_date.map((u: any) => {
+      matched.push(u);
+      return `- ${label(u)}: ${u.version}${u.spt_versions?.length ? ` (SPT ${u.spt_versions.join(", ")})` : ""}`;
+    }).join("\n"));
   }
 
   if (data.incompatible_with_spt?.length) {
-    sections.push("## Incompatible with SPT\n" + data.incompatible_with_spt.map((u: any) =>
-      `- **${u.name ?? u.identifier}**: ${u.current_version}`
-    ).join("\n"));
+    sections.push("## Incompatible with SPT\n" + data.incompatible_with_spt.map((u: any) => {
+      matched.push(u);
+      const reason = u.reason === "no_version_for_spt" ? `no version for SPT ${data.spt_version}` : u.reason;
+      return `- ${label(u)}: ${u.version} (${reason})`;
+    }).join("\n"));
   }
 
-  return sections.length ? sections.join("\n\n") : "No update information returned.";
+  const notFound = parsePairs(requested).filter((pair) => {
+    const [id, version] = pair.split(":").map((s) => s.trim());
+    return !matched.some(
+      (m) => m.version === version && (String(m.mod_id) === id || m.guid?.toLowerCase() === id?.toLowerCase())
+    );
+  });
+  if (notFound.length) {
+    sections.push(`Not found on the Forge: ${notFound.join(", ")}`);
+  }
+
+  return sections.join("\n\n");
 }
 
-function formatDep(dep: any, indent: number = 0): string {
+function formatDependencyTrees(data: any, requested: string, sptVersion: string): string {
+  const sections: string[] = [];
+  for (const [pair, nodes] of Object.entries<any[]>(data ?? {})) {
+    const body = nodes.length
+      ? nodes.map((d) => formatDep(d, 0, sptVersion)).join("\n")
+      : "No dependencies.";
+    sections.push(`## ${pair}\n${body}`);
+  }
+  const notFound = parsePairs(requested).filter((pair) => !(pair in (data ?? {})));
+  if (notFound.length) {
+    sections.push(`Not found on the Forge: ${notFound.join(", ")}`);
+  }
+  return sections.length ? sections.join("\n\n") : "No dependency information returned.";
+}
+
+function formatDep(dep: any, indent: number = 0, sptVersion?: string): string {
   const prefix = "  ".repeat(indent);
   const v = dep.latest_compatible_version;
   const lines = [
     `${prefix}${dep.name ?? dep.slug} (${dep.guid ?? dep.id})`,
-    v ? `${prefix}  Version: ${v.version}` : null,
+    v ? `${prefix}  Version: ${v.version}` : `${prefix}  ⚠ No version compatible with SPT ${sptVersion ?? "?"}`,
     v?.link ? `${prefix}  Download: ${v.link}` : null,
     v?.fika_compatibility ? `${prefix}  Fika: ${v.fika_compatibility}` : null,
     dep.conflict ? `${prefix}  ⚠ VERSION CONFLICT` : null,
   ];
   if (dep.dependencies?.length) {
     for (const sub of dep.dependencies) {
-      lines.push(formatDep(sub, indent + 1));
+      lines.push(formatDep(sub, indent + 1, sptVersion));
     }
   }
   return lines.filter(Boolean).join("\n");
@@ -393,7 +473,7 @@ server.registerTool(
   async (input) => {
     const params = { mods: input.mods, spt_version: input.spt_version };
     const data = (await forgeGet("/mods/updates", params)) as any;
-    return textResult(formatUpdates(data.data ?? data));
+    return textResult(formatUpdates(data.data ?? data, input.mods));
   }
 );
 
@@ -404,23 +484,27 @@ server.registerTool(
   {
     title: "Resolve Mod Dependencies",
     description:
-      "Resolve the full recursive dependency tree for one or more mod versions. Detects version conflicts and provides download links.",
+      "Resolve the full recursive dependency tree for one or more mod versions against a specific SPT version. Returns one tree per requested pair, detects version conflicts and provides download links.",
     inputSchema: z.object({
       mods: z
         .string()
         .describe(
-          "Comma-separated identifier:version pairs. E.g. '5:1.2.0,com.example.mod:2.0.5'"
+          "Comma-separated identifier:version pairs. Identifier can be mod ID or GUID. E.g. '5:1.2.0,com.example.mod:2.0.5'"
+        ),
+      spt_version: z
+        .string()
+        .describe(
+          "SPT version to resolve dependency versions against. Must be an exact published SPT version (e.g. '4.1.6'), not a constraint"
         ),
     }),
   },
   async (input) => {
     const data = (await forgeGet("/mods/dependencies", {
       mods: input.mods,
+      spt_version: input.spt_version,
     })) as any;
 
-    const deps = data.data ?? [];
-    if (!deps.length) return textResult("No dependencies found.");
-    return textResult(deps.map((d: any) => formatDep(d)).join("\n\n"));
+    return textResult(formatDependencyTrees(data.data, input.mods, input.spt_version));
   }
 );
 
@@ -630,23 +714,27 @@ server.registerTool(
   {
     title: "Resolve Addon Dependencies",
     description:
-      "Resolve the full recursive dependency tree for one or more addon versions. Uses addon ID or slug as identifier (not GUID).",
+      "Resolve the full recursive mod dependency tree for one or more addon versions against a specific SPT version. Uses addon ID or slug as identifier (not GUID).",
     inputSchema: z.object({
       addons: z
         .string()
         .describe(
           "Comma-separated identifier:version pairs. Identifier is addon ID or slug. E.g. '12:1.0.0,my-addon:2.1.0'"
         ),
+      spt_version: z
+        .string()
+        .describe(
+          "SPT version to resolve dependency versions against. Must be an exact published SPT version (e.g. '4.1.6'), not a constraint"
+        ),
     }),
   },
   async (input) => {
     const data = (await forgeGet("/addons/dependencies", {
       addons: input.addons,
+      spt_version: input.spt_version,
     })) as any;
 
-    const deps = data.data ?? [];
-    if (!deps.length) return textResult("No dependencies found.");
-    return textResult(deps.map((d: any) => formatDep(d)).join("\n\n"));
+    return textResult(formatDependencyTrees(data.data, input.addons, input.spt_version));
   }
 );
 
