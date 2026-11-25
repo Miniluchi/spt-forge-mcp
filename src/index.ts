@@ -85,6 +85,90 @@ async function forgeGet(
   throw new Error("Unreachable");
 }
 
+const HTML_ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+  ndash: "–", mdash: "—", hellip: "…", lsquo: "‘", rsquo: "’", ldquo: "“", rdquo: "”",
+};
+
+// The Forge returns descriptions as rendered HTML; turn them into compact plain text.
+function htmlToText(html: string): string {
+  let depth = 0; // list nesting; "\u0001" marks one indent level until whitespace is normalised
+  return html
+    .replace(/>\s*\n\s*</g, "><")
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
+    .replace(/<img\b[^>]*>/gi, "")
+    .replace(/<a\b[^>]*?href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_, href: string, inner: string) => {
+      const text = inner.replace(/<[^>]+>/g, "").trim();
+      return !text || text === href ? href : `${text} (${href})`;
+    })
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<(\/?)(ul|ol|li)\b[^>]*>/gi, (_, close: string, tag: string) => {
+      if (tag.toLowerCase() === "li") return close ? "" : `\n${"\u0001".repeat(Math.max(depth - 1, 0))}- `;
+      depth = Math.max(depth + (close ? -1 : 1), 0);
+      return "\n";
+    })
+    .replace(/<hr\b[^>]*>/gi, "\n---\n")
+    .replace(/<\/?(p|div|h[1-6]|blockquote|pre|table|tr)\b[^>]*>/gi, "\n")
+    .replace(/<\/t[dh]>/gi, " ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, entity: string) => {
+      if (entity[0] === "#") {
+        const code = entity[1].toLowerCase() === "x" ? parseInt(entity.slice(2), 16) : parseInt(entity.slice(1), 10);
+        return Number.isFinite(code) ? String.fromCodePoint(code) : match;
+      }
+      return HTML_ENTITIES[entity.toLowerCase()] ?? match;
+    })
+    .replace(/[ \t ]+/g, " ")
+    .replace(/ *\n */g, "\n")
+    .replace(/^(\u0001*-) *\n+/gm, "$1 ")
+    .replace(/\n{2,}(?=\u0001*- )/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/\u0001/g, "  ")
+    .trim();
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max).trimEnd()}…` : text;
+}
+
+// Version changelogs in list views: plain text, shortened, indented under the version.
+function formatChangelog(html: string): string {
+  const text = truncate(htmlToText(html), 500);
+  return text ? `  Changelog:\n${text.split("\n").map((l) => (l ? `    ${l}` : "")).join("\n")}` : "";
+}
+
+// Sort comparator for version strings, newest first (stable releases before prereleases).
+function compareVersionsDesc(a: string, b: string): number {
+  const parse = (v: string) => {
+    const dash = v.indexOf("-");
+    const core = dash < 0 ? v : v.slice(0, dash);
+    return { nums: core.split(".").map((n) => parseInt(n, 10) || 0), pre: dash < 0 ? "" : v.slice(dash + 1) };
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  for (let i = 0; i < Math.max(pa.nums.length, pb.nums.length); i++) {
+    const diff = (pb.nums[i] ?? 0) - (pa.nums[i] ?? 0);
+    if (diff) return diff;
+  }
+  if (pa.pre === pb.pre) return 0;
+  if (!pa.pre) return -1;
+  if (!pb.pre) return 1;
+  return pb.pre.localeCompare(pa.pre, undefined, { numeric: true });
+}
+
+// Each version dependency is a mod object whose `versions` are the versions satisfying the constraint.
+function formatVersionDependency(dep: any): string {
+  const versions = (dep.versions ?? []).map((v: any) => v.version).sort(compareVersionsDesc);
+  const shown = versions.length
+    ? `${versions.slice(0, 3).join(", ")}${versions.length > 3 ? ` (+${versions.length - 3} more)` : ""}`
+    : "no matching published version";
+  return `    - ${dep.name ?? dep.guid} (ID: ${dep.id}): ${shown}`;
+}
+
+function formatLinks(links: any[]): string {
+  return links.map((l) => (l.label ? `${l.label} ${l.url}` : l.url)).join(", ");
+}
+
 function formatModSummary(mod: any): string {
   const lines = [
     `**${mod.name}** (ID: ${mod.id})`,
@@ -107,7 +191,7 @@ function formatModDetail(mod: any): string {
     `# ${mod.name}`,
     mod.guid ? `GUID: ${mod.guid}` : null,
     mod.teaser ? `\n${mod.teaser}` : null,
-    mod.description ? `\n${mod.description}` : null,
+    mod.description ? `\n${htmlToText(mod.description)}` : null,
     `\nDownloads: ${mod.downloads?.toLocaleString() ?? "N/A"}`,
     mod.owner ? `Author: ${mod.owner.name}` : null,
     mod.additional_authors?.length
@@ -119,11 +203,11 @@ function formatModDetail(mod: any): string {
     mod.featured ? `Featured: yes` : null,
     mod.contains_ads ? `Contains ads: yes` : null,
     mod.contains_ai_content ? `Contains AI content: yes` : null,
-    mod.category ? `Category: ${mod.category.name}` : null,
+    mod.category ? `Category: ${mod.category.title ?? mod.category.name}` : null,
     mod.license ? `License: ${mod.license.name}` : null,
     mod.detail_url ? `URL: ${mod.detail_url}` : null,
     mod.source_code_links?.length
-      ? `Source: ${mod.source_code_links.map((l: any) => l.url).join(", ")}`
+      ? `Source: ${formatLinks(mod.source_code_links)}`
       : null,
     mod.published_at ? `Published: ${mod.published_at}` : null,
     mod.updated_at ? `Updated: ${mod.updated_at}` : null,
@@ -133,7 +217,7 @@ function formatModDetail(mod: any): string {
     lines.push("\n## Recent Versions");
     for (const v of mod.versions) {
       lines.push(
-        `  ${v.version} (SPT ${v.spt_version_constraint ?? "?"}) — ${v.downloads?.toLocaleString() ?? 0} downloads${v.fika_compatibility ? ` [Fika: ${v.fika_compatibility}]` : ""}`
+        `  ${v.version} (SPT ${v.spt_version_constraint || "?"}) — ${v.downloads?.toLocaleString() ?? 0} downloads${v.fika_compatibility ? ` [Fika: ${v.fika_compatibility}]` : ""}`
       );
     }
   }
@@ -145,15 +229,19 @@ function formatAddonDetail(addon: any): string {
   const lines = [
     `# ${addon.name}`,
     addon.teaser ? `\n${addon.teaser}` : null,
-    addon.description ? `\n${addon.description}` : null,
+    addon.description ? `\n${htmlToText(addon.description)}` : null,
     `\nDownloads: ${addon.downloads?.toLocaleString() ?? "N/A"}`,
     addon.owner ? `Author: ${addon.owner.name}` : null,
     addon.additional_authors?.length
       ? `Additional authors: ${addon.additional_authors.map((a: any) => a.name).join(", ")}`
       : null,
     addon.mod ? `Parent mod: ${addon.mod.name} (ID: ${addon.mod.id})` : null,
+    addon.is_detached ? `Detached from parent mod${addon.detached_at ? ` since ${addon.detached_at}` : ""}` : null,
     addon.license ? `License: ${addon.license.name}` : null,
     addon.detail_url ? `URL: ${addon.detail_url}` : null,
+    addon.source_code_links?.length
+      ? `Source: ${formatLinks(addon.source_code_links)}`
+      : null,
     addon.contains_ads ? `Contains ads: yes` : null,
     addon.contains_ai_content ? `Contains AI content: yes` : null,
     addon.published_at ? `Published: ${addon.published_at}` : null,
@@ -427,7 +515,7 @@ server.registerTool(
     const lines = versions.map((v: any) => {
       const parts = [
         `**v${v.version}** (ID: ${v.id})`,
-        `  SPT: ${v.spt_version_constraint ?? "N/A"}`,
+        `  SPT: ${v.spt_version_constraint || "N/A"}`,
         `  Downloads: ${v.downloads?.toLocaleString() ?? 0}`,
         v.fika_compatibility
           ? `  Fika: ${v.fika_compatibility}`
@@ -437,12 +525,14 @@ server.registerTool(
           : null,
         v.published_at ? `  Published: ${v.published_at}` : null,
         v.link ? `  Download: ${v.link}` : null,
+        v.virus_total_links?.length
+          ? `  VirusTotal: ${formatLinks(v.virus_total_links)}`
+          : null,
       ];
       if (v.dependencies?.length) {
-        parts.push(
-          `  Dependencies: ${v.dependencies.map((d: any) => `${d.name ?? d.guid} (${d.version_constraint ?? "any"})`).join(", ")}`
-        );
+        parts.push(`  Dependencies:\n${v.dependencies.map(formatVersionDependency).join("\n")}`);
       }
+      if (v.description) parts.push(formatChangelog(v.description));
       return parts.filter(Boolean).join("\n");
     });
 
@@ -525,7 +615,7 @@ server.registerTool(
       sort: z.optional(z.string()).describe("Sort field, e.g. '-published_at'"),
       include: z
         .optional(z.string())
-        .describe("Relationships to include: versions, license, mod"),
+        .describe("Relationships to include: mod (default), latest_version, versions, license, source_code_links"),
       page: z.optional(z.number().int().min(1)),
       per_page: z.optional(z.number().int().min(1).max(50)),
     }),
@@ -536,7 +626,7 @@ server.registerTool(
       "filter[name]": input.filter_name,
       "filter[mod_id]": input.filter_mod_id,
       sort: input.sort,
-      include: input.include,
+      include: input.include ?? "mod",
       page: input.page?.toString(),
       per_page: input.per_page?.toString(),
     };
@@ -552,6 +642,11 @@ server.registerTool(
           a.teaser ? `  ${a.teaser}` : null,
           `  Downloads: ${a.downloads?.toLocaleString() ?? "N/A"}`,
           a.owner ? `  Author: ${a.owner.name}` : null,
+          a.mod
+            ? `  Parent mod: ${a.mod.name} (ID: ${a.mod.id})`
+            : a.mod_id ? `  Parent mod ID: ${a.mod_id}` : null,
+          a.is_detached ? `  Detached from parent mod` : null,
+          a.latest_version ? `  Latest version: ${a.latest_version.version}` : null,
           a.detail_url ? `  URL: ${a.detail_url}` : null,
         ]
           .filter(Boolean)
@@ -574,12 +669,12 @@ server.registerTool(
       addon_id: z.number().int().describe("The addon's numeric ID"),
       include: z
         .optional(z.string())
-        .describe("Relationships: versions, license, mod"),
+        .describe("Relationships: versions, latest_version, license, mod, source_code_links"),
     }),
   },
   async (input) => {
     const params: Record<string, string | undefined> = {
-      include: input.include ?? "versions,license,mod",
+      include: input.include ?? "versions,license,mod,source_code_links",
     };
     const data = (await forgeGet(`/addon/${input.addon_id}`, params)) as any;
     return textResult(formatAddonDetail(data.data));
@@ -709,7 +804,10 @@ server.registerTool(
           : null,
         v.published_at ? `  Published: ${v.published_at}` : null,
         v.link ? `  Download: ${v.link}` : null,
-        v.description ? `  ${v.description}` : null,
+        v.virus_total_links?.length
+          ? `  VirusTotal: ${formatLinks(v.virus_total_links)}`
+          : null,
+        v.description ? formatChangelog(v.description) : null,
       ];
       return parts.filter(Boolean).join("\n");
     });
