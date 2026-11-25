@@ -4,8 +4,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod/v4";
 
-const BASE_URL = "https://forge.sp-tarkov.com/api/v0";
-const USER_AGENT = "spt-forge-mcp/1.0.0";
+const VERSION = "1.0.0";
+const DEFAULT_BASE_URL = "https://sp-mod.com/api/v0";
+const BASE_URL = (process.env.FORGE_API_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, "");
+const USER_AGENT = `spt-forge-mcp/${VERSION}`;
 
 const HEADERS = {
   Accept: "application/json",
@@ -28,7 +30,16 @@ async function forgeGet(
   }
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const response = await fetch(url.toString(), { headers: HEADERS });
+    let response: Response;
+    try {
+      response = await fetch(url.toString(), { headers: HEADERS });
+    } catch (err: any) {
+      const code = err?.cause?.code;
+      const cause = typeof code === "string" ? code : err?.cause?.message ?? err?.message ?? String(err);
+      throw new Error(
+        `Could not reach the Forge API at ${BASE_URL} (${cause}). If the Forge has moved, set FORGE_API_BASE_URL.`
+      );
+    }
 
     if (response.status === 429) {
       if (attempt === MAX_RETRIES) {
@@ -194,7 +205,7 @@ function textResult(text: string) {
 
 const server = new McpServer({
   name: "spt-forge",
-  version: "1.0.0",
+  version: VERSION,
 });
 
 // ─── search_mods ─────────────────────────────────────────────
@@ -552,7 +563,7 @@ server.registerTool(
   },
   async () => {
     const data = (await forgeGet("/ping")) as any;
-    return textResult(data.message ?? JSON.stringify(data));
+    return textResult(data.data?.message ?? data.message ?? JSON.stringify(data));
   }
 );
 
