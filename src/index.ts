@@ -614,25 +614,37 @@ server.registerTool(
   {
     title: "Get SPT Versions",
     description:
-      "List available SPT versions with mod counts and release links. Useful for determining which SPT version constraint to filter mods by.",
+      "List available SPT versions with mod counts and release links, newest first by default. Useful for determining which SPT version constraint to filter mods by.",
     inputSchema: z.object({
+      filter_spt_version: z
+        .optional(z.string())
+        .describe("Only versions matching a semver constraint (e.g. '^4.1.0', '~3.11.0')"),
+      sort: z
+        .optional(z.string())
+        .describe(
+          "Sort field(s), prefix with - for DESC. Options: version (semver), mod_count, id, created_at, updated_at. Default '-version'"
+        ),
       page: z.optional(z.number().int().min(1)),
       per_page: z.optional(z.number().int().min(1).max(50)),
     }),
   },
   async (input) => {
     const params: Record<string, string | undefined> = {
+      "filter[spt_version]": input.filter_spt_version,
+      sort: input.sort ?? "-version",
       page: input.page?.toString(),
       per_page: input.per_page?.toString(),
     };
     const data = (await forgeGet("/spt/versions", params)) as any;
     const versions = data.data ?? [];
+    const meta = data.meta ?? {};
 
     const lines = versions.map(
       (v: any) =>
         `- **SPT ${v.version}** — ${v.mod_count} mods${v.link ? ` — [Release](${v.link})` : ""}`
     );
-    return textResult(`## SPT Versions\n\n${lines.join("\n")}`);
+    const header = `${meta.total ?? versions.length} SPT versions (page ${meta.current_page ?? 1} of ${meta.last_page ?? 1})`;
+    return textResult(`## SPT Versions\n\n${header}\n\n${lines.join("\n")}`);
   }
 );
 
