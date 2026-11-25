@@ -169,11 +169,25 @@ function formatLinks(links: any[]): string {
   return links.map((l) => (l.label ? `${l.label} ${l.url}` : l.url)).join(", ");
 }
 
+// Notices the Forge shows on a mod's page.
+function modWarnings(mod: any): string[] {
+  return [
+    mod.cheat_notice
+      ? "⚠ Cheat notice: provides cheat-like functionality, designed for SPT only. Using it on live EFT servers will get you banned."
+      : null,
+    mod.shows_profile_binding_notice
+      ? "⚠ Profile binding: may make permanent changes to your profile and may not be removable without starting a new profile."
+      : null,
+  ].filter((w): w is string => w !== null);
+}
+
 function formatModSummary(mod: any): string {
   const lines = [
     `**${mod.name}** (ID: ${mod.id})`,
     mod.teaser ? `  ${mod.teaser}` : null,
+    ...modWarnings(mod).map((w) => `  ${w}`),
     `  Downloads: ${mod.downloads?.toLocaleString() ?? "N/A"}`,
+    mod.endorsements_count != null ? `  Endorsements: ${mod.endorsements_count.toLocaleString()}` : null,
     mod.owner ? `  Author: ${mod.owner.name}` : null,
     mod.fika_compatibility != null
       ? `  Fika compatible: ${mod.fika_compatibility}`
@@ -191,8 +205,11 @@ function formatModDetail(mod: any): string {
     `# ${mod.name}`,
     mod.guid ? `GUID: ${mod.guid}` : null,
     mod.teaser ? `\n${mod.teaser}` : null,
+    ...modWarnings(mod).map((w) => `\n${w}`),
     mod.description ? `\n${htmlToText(mod.description)}` : null,
     `\nDownloads: ${mod.downloads?.toLocaleString() ?? "N/A"}`,
+    mod.endorsements_count != null ? `Endorsements: ${mod.endorsements_count.toLocaleString()}` : null,
+    mod.favourites_count != null ? `Favourites: ${mod.favourites_count.toLocaleString()}` : null,
     mod.owner ? `Author: ${mod.owner.name}` : null,
     mod.additional_authors?.length
       ? `Additional authors: ${mod.additional_authors.map((a: any) => a.name).join(", ")}`
@@ -393,6 +410,9 @@ server.registerTool(
       filter_name: z
         .optional(z.string())
         .describe("Fuzzy filter by mod name"),
+      filter_guid: z
+        .optional(z.string())
+        .describe("Exact mod GUID(s), comma-separated (e.g. 'me.sol.sain'). Useful to map a GUID to a mod ID"),
       filter_category_slug: z
         .optional(z.string())
         .describe(
@@ -412,7 +432,7 @@ server.registerTool(
       sort: z
         .optional(z.string())
         .describe(
-          "Sort by field(s). Prefix with - for DESC. Options: name, featured, created_at, updated_at, published_at. E.g. '-published_at'"
+          "Sort by field(s). Prefix with - for DESC. Options: name, downloads, favourites_count, endorsements_count, featured, created_at, updated_at, published_at. E.g. '-downloads'"
         ),
       include: z
         .optional(z.string())
@@ -429,6 +449,7 @@ server.registerTool(
     const params: Record<string, string | undefined> = {
       query: input.query,
       "filter[name]": input.filter_name,
+      "filter[guid]": input.filter_guid,
       "filter[category_slug]": input.filter_category_slug,
       "filter[spt_version]": input.filter_spt_version,
       "filter[fika_compatibility]": input.filter_fika_compatible?.toString(),
@@ -491,15 +512,25 @@ server.registerTool(
         .describe(
           "Comma-separated relationships to include: dependencies, virus_total_links"
         ),
+      filter_spt_version: z
+        .optional(z.string())
+        .describe("Only versions compatible with an SPT version or constraint (e.g. '4.1.6', '^4.1.0')"),
+      filter_fika_compatibility: z
+        .optional(z.string())
+        .describe("Fika compatibility status(es), comma-separated: compatible, incompatible, unknown"),
       sort: z
         .optional(z.string())
-        .describe("Sort field, e.g. '-published_at' for newest first"),
+        .describe(
+          "Sort field(s), prefix with - for DESC. Options: version (semver), downloads, published_at, created_at, updated_at, id. Default '-published_at'"
+        ),
       page: z.optional(z.number().int().min(1)),
       per_page: z.optional(z.number().int().min(1).max(50)),
     }),
   },
   async (input) => {
     const params: Record<string, string | undefined> = {
+      "filter[spt_version]": input.filter_spt_version,
+      "filter[fika_compatibility]": input.filter_fika_compatibility,
       include: input.include ?? "dependencies",
       sort: input.sort ?? "-published_at",
       page: input.page?.toString(),
